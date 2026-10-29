@@ -107,7 +107,49 @@ Pydantic should reject invalid request bodies before SQL is sent, giving the cal
 
 ## Index experiment
 
-Measured results are added after running `experiments/idx_data.sql` in the isolated `idx_demo` database.
+The experiment used an isolated `idx_demo` database and the deterministic generator in `experiments/idx_data.sql`: 500 courses, 20,000 students, and 50,000 enrollments. Because the final `schema.sql` already contains the required index, it was dropped only in `idx_demo` to reproduce the “before” state:
+
+```sql
+DROP INDEX enrollments_student_id_idx;
+\i experiments/idx_data.sql
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM enrollments WHERE student_id = 777;
+
+CREATE INDEX enrollments_student_id_idx ON enrollments (student_id);
+ANALYZE enrollments;
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM enrollments WHERE student_id = 777;
+```
+
+Student 777 has 3 enrollment rows. Each state was measured three times on PostgreSQL 16.15.
+
+| State | Access method | Estimated cost | Rows removed by filter | Execution times | Mean |
+|---|---|---:|---:|---|---:|
+| Before index | Sequential scan | `0.00..1042.00` | 49,997 | 1.692, 1.739, 1.794 ms | 1.742 ms |
+| After index | Bitmap index + bitmap heap scan | `4.31..15.59` | 0 | 0.088, 0.064, 0.061 ms | 0.071 ms |
+
+Representative plans:
+
+```text
+Seq Scan on enrollments  (cost=0.00..1042.00 rows=3 width=34)
+  (actual time=0.032..1.674 rows=3 loops=1)
+  Filter: (student_id = 777)
+  Rows Removed by Filter: 49997
+Execution Time: 1.692 ms
+```
+
+```text
+Bitmap Heap Scan on enrollments  (cost=4.31..15.59 rows=3 width=34)
+  (actual time=0.014..0.031 rows=3 loops=1)
+  Recheck Cond: (student_id = 777)
+  -> Bitmap Index Scan on enrollments_student_id_idx
+       Index Cond: (student_id = 777)
+Execution Time: 0.061 ms
+```
+
+The plan changed because `student_id = 777` is highly selective: only 3 of 50,000 rows match. Without the index PostgreSQL must inspect every row; with it, the engine finds the three tuple locations and reads only their heap blocks. The measured mean was about **24.5× faster** on this small local data set. This does not mean every query benefits from an index: a query returning most of the table may still be cheaper as a sequential scan, and each index costs storage plus extra work on inserts, updates, and deletes.
 
 ## Transaction experiment
 
@@ -123,7 +165,7 @@ The normalization, concurrency, injection, analytical-query, and schema-evolutio
 - [x] Seed data contains exactly 6 courses, 3 students, and 6 enrollments.
 - [x] Required API queries and both bonus reports are present.
 - [x] Constraint failures were reproduced against PostgreSQL.
-- [ ] Before/after index plans and measured timings are documented.
+- [x] Before/after index plans and measured timings are documented.
 - [ ] Transaction failure and two-session visibility are documented.
 - [ ] All five bonus tasks are documented.
 - [ ] Fresh automated verification passes.
