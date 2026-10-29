@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -149,6 +150,70 @@ class Lab6SeedTests(unittest.TestCase):
                 "3:Asel Omarova:asel@example.com",
             ],
         )
+
+
+class Lab6QueryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        run_psql("-v", "ON_ERROR_STOP=1", "-f", str(ROOT / "schema.sql"))
+        run_psql("-v", "ON_ERROR_STOP=1", "-f", str(ROOT / "seed.sql"))
+
+    def test_queries_run_twice_without_changing_seed_state(self) -> None:
+        queries = ROOT / "queries.sql"
+        self.assertTrue(queries.exists(), "queries.sql must exist")
+
+        for _ in range(2):
+            run_psql("-v", "ON_ERROR_STOP=1", "-f", str(queries))
+
+        state = run_psql(
+            "-Atc",
+            "SELECT (SELECT count(*) FROM courses), "
+            "(SELECT count(*) FROM students), "
+            "(SELECT count(*) FROM enrollments), "
+            "(SELECT likes FROM courses WHERE id = 'api-design');",
+        ).stdout.strip()
+        self.assertEqual(state, "6|3|6|11")
+
+    def test_queries_return_required_and_bonus_results(self) -> None:
+        output = run_psql(
+            "-A",
+            "-t",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            str(ROOT / "queries.sql"),
+        ).stdout
+        for expected in (
+            "modern-frontend|Modern Frontend: React & Next.js|5|24",
+            "databases-postgresql|Relational Databases: PostgreSQL|5|15",
+            "api-design|API Design: REST vs GraphQL|4|t|11",
+            "api-design|12",
+            "web-security|3",
+            "Aigerim Sadykova|Modern Frontend: React & Next.js",
+            "ai-integration|3",
+            "api-design|0",
+            "Daniyar Bekov|3",
+            "Aigerim Sadykova|2",
+        ):
+            self.assertIn(expected, output)
+
+    def test_modifying_examples_are_wrapped_in_rollback_transactions(self) -> None:
+        sql = (ROOT / "queries.sql").read_text(encoding="utf-8")
+        like_block = re.search(
+            r"-- 3\..*?BEGIN;(?P<body>.*?)ROLLBACK;",
+            sql,
+            flags=re.DOTALL,
+        )
+        enrollment_block = re.search(
+            r"-- 4\..*?BEGIN;(?P<body>.*?)ROLLBACK;",
+            sql,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(like_block)
+        self.assertIsNotNone(enrollment_block)
+        self.assertIn("UPDATE courses", like_block.group("body"))
+        self.assertIn("INSERT INTO enrollments", enrollment_block.group("body"))
+        self.assertIn("count(e.id)", sql)
 
 
 if __name__ == "__main__":
