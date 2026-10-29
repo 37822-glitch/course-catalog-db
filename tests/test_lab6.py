@@ -5,6 +5,7 @@ import re
 import subprocess
 import unittest
 from pathlib import Path
+from typing import Optional
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,9 +27,16 @@ PSQL_BASE = [
 ]
 
 
-def run_psql(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run_psql(
+    *args: str,
+    check: bool = True,
+    database: Optional[str] = None,
+) -> subprocess.CompletedProcess[str]:
+    command = PSQL_BASE.copy()
+    if database is not None:
+        command[-1] = database
     result = subprocess.run(
-        [*PSQL_BASE, *args],
+        [*command, *args],
         cwd=ROOT,
         env=PSQL_ENV,
         text=True,
@@ -214,6 +222,54 @@ class Lab6QueryTests(unittest.TestCase):
         self.assertIn("UPDATE courses", like_block.group("body"))
         self.assertIn("INSERT INTO enrollments", enrollment_block.group("body"))
         self.assertIn("count(e.id)", sql)
+
+
+class Lab6ExperimentFileTests(unittest.TestCase):
+    def test_index_dataset_has_required_scale(self) -> None:
+        data_file = ROOT / "experiments" / "idx_data.sql"
+        self.assertTrue(data_file.exists(), "experiments/idx_data.sql must exist")
+
+        run_psql(
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            str(ROOT / "schema.sql"),
+            database="idx_demo",
+        )
+        run_psql(
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            str(data_file),
+            database="idx_demo",
+        )
+        counts = run_psql(
+            "-Atc",
+            "SELECT (SELECT count(*) FROM courses), "
+            "(SELECT count(*) FROM students), "
+            "(SELECT count(*) FROM enrollments);",
+            database="idx_demo",
+        ).stdout.strip()
+        self.assertEqual(counts, "500|20000|50000")
+
+    def test_normalization_demo_is_repeatable(self) -> None:
+        demo_file = ROOT / "experiments" / "norm_demo.sql"
+        self.assertTrue(demo_file.exists(), "experiments/norm_demo.sql must exist")
+
+        for _ in range(2):
+            run_psql(
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-f",
+                str(demo_file),
+                database="norm_demo",
+            )
+        rows = run_psql(
+            "-Atc",
+            "SELECT count(*) FROM course_enrollments_flat;",
+            database="norm_demo",
+        ).stdout.strip()
+        self.assertEqual(rows, "6")
 
 
 if __name__ == "__main__":
