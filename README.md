@@ -186,7 +186,84 @@ This matches PostgreSQL's default `READ COMMITTED` isolation: another transactio
 
 ## Bonus tasks
 
-The normalization, concurrency, injection, analytical-query, and schema-evolution results are documented after their experiments.
+### 1. Normalization and anomalies
+
+`experiments/norm_demo.sql` creates the deliberately denormalized `course_enrollments_flat` table in a separate `norm_demo` database. Its six rows repeat Aigerim twice, Daniyar three times, and the AI course three times. That design causes all three classic anomalies:
+
+- **Update anomaly:** changing Daniyar's email requires three updates; missing one leaves contradictory facts.
+- **Insert anomaly:** the table's required course columns prevent recording a student before that student chooses a course.
+- **Delete anomaly:** deleting the last enrollment for a course can also erase the only stored copy of the course itself.
+
+The production schema removes these anomalies by decomposing the flat relation into `students`, `courses`, and `enrollments`. Each fact has one authoritative row, while foreign keys preserve the relationships. The normalization demo is repeatable and does not touch `course_catalog`.
+
+Run it with:
+
+```bash
+createdb norm_demo
+psql -d norm_demo -v ON_ERROR_STOP=1 -f experiments/norm_demo.sql
+```
+
+### 2. Lost update and row locking
+
+The initial value for `api-design.likes` was 11. Two simulated clients both read 11 and each wrote its locally calculated value 12. The final result was 12, not 13: one update was lost.
+
+The corrected experiment wrapped each operation in a transaction and locked the row before reading:
+
+```sql
+BEGIN;
+SELECT likes
+FROM courses
+WHERE id = 'api-design'
+FOR UPDATE;
+
+UPDATE courses
+SET likes = likes + 1
+WHERE id = 'api-design';
+COMMIT;
+```
+
+Session A locked and changed 11 to 12. Session B waited for A's commit, then read 12 and changed it to 13. The measured final value was 13, so both actions were preserved. For this particular counter, the single atomic statement `UPDATE courses SET likes = likes + 1 ...` is already safe and simpler; `FOR UPDATE` is useful when the new value depends on several reads or rules.
+
+### 3. SQL injection: concatenation versus parameters
+
+If untrusted text is concatenated into SQL, an id such as `api-design' OR '1'='1` changes the predicate. The unsafe demonstration returned all 6 courses:
+
+```sql
+-- Do not build SQL like this in application code:
+SELECT count(*)
+FROM courses
+WHERE id = 'api-design' OR '1'='1';  -- 6 rows
+```
+
+With a prepared statement, the same input remains one text value and matches zero rows:
+
+```sql
+PREPARE safe_lookup(text) AS
+SELECT count(*) FROM courses WHERE id = $1;
+
+EXECUTE safe_lookup('api-design'' OR ''1''=''1');  -- 0 rows
+```
+
+FastAPI database code must use driver parameters, never string interpolation. Parameters separate SQL structure from data; manual escaping is not an adequate replacement.
+
+### 4. Additional analytical queries
+
+Queries 7 and 8 at the end of `queries.sql` implement both reports:
+
+- a `LEFT JOIN` plus `WHERE e.id IS NULL` finds courses without enrollments (`api-design`, `databases-postgresql`, and `web-security` in the seed data);
+- `GROUP BY` plus `HAVING count(*) > 1` finds students taking multiple courses (Daniyar: 3, Aigerim: 2).
+
+### 5. Schema evolution: email rule
+
+The new rule can be applied to an existing compatible database with:
+
+```sql
+ALTER TABLE students
+ADD CONSTRAINT students_email_format
+CHECK (position('@' IN email) > 1);
+```
+
+It is included directly in the final `schema.sql` so a fresh installation receives the same rule. PostgreSQL validates existing rows when the constraint is added; incompatible legacy data must be corrected first (or the constraint can be added `NOT VALID`, cleaned, then validated). An attempted insert of `invalid-email` was rejected with SQLSTATE `23514` and constraint name `students_email_format`.
 
 ## Self-review checklist
 
@@ -196,5 +273,5 @@ The normalization, concurrency, injection, analytical-query, and schema-evolutio
 - [x] Constraint failures were reproduced against PostgreSQL.
 - [x] Before/after index plans and measured timings are documented.
 - [x] Transaction failure and two-session visibility are documented.
-- [ ] All five bonus tasks are documented.
-- [ ] Fresh automated verification passes.
+- [x] All five bonus tasks are documented.
+- [x] Fresh automated verification passes.

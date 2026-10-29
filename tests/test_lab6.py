@@ -160,6 +160,56 @@ class Lab6SeedTests(unittest.TestCase):
         )
 
 
+class Lab6ConstraintBehaviorTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        run_psql("-v", "ON_ERROR_STOP=1", "-f", str(ROOT / "schema.sql"))
+        run_psql("-v", "ON_ERROR_STOP=1", "-f", str(ROOT / "seed.sql"))
+
+    def test_unique_foreign_key_and_email_checks_reject_bad_data(self) -> None:
+        cases = (
+            (
+                "INSERT INTO students (name, email) "
+                "VALUES ('Duplicate', 'aigerim@example.com');",
+                "students_email_key",
+            ),
+            (
+                "INSERT INTO enrollments (course_id, student_id) "
+                "VALUES ('no-such-course', 1);",
+                "enrollments_course_id_fkey",
+            ),
+            (
+                "INSERT INTO students (name, email) "
+                "VALUES ('Bad Email', 'invalid-email');",
+                "students_email_format",
+            ),
+        )
+        for sql, expected_constraint in cases:
+            result = run_psql("-v", "ON_ERROR_STOP=1", "-c", sql, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(expected_constraint, result.stderr)
+
+    def test_delete_actions_are_restrict_and_cascade(self) -> None:
+        restricted = run_psql(
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            "DELETE FROM courses WHERE id = 'modern-frontend';",
+            check=False,
+        )
+        self.assertNotEqual(restricted.returncode, 0)
+        self.assertIn("enrollments_course_id_fkey", restricted.stderr)
+
+        cascade = run_psql(
+            "-Atc",
+            "BEGIN; DELETE FROM students WHERE id = 2; "
+            "SELECT count(*) FROM enrollments; ROLLBACK;",
+        ).stdout.splitlines()
+        self.assertIn("3", cascade)
+        remaining = run_psql("-Atc", "SELECT count(*) FROM enrollments;").stdout.strip()
+        self.assertEqual(remaining, "6")
+
+
 class Lab6QueryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -270,6 +320,35 @@ class Lab6ExperimentFileTests(unittest.TestCase):
             database="norm_demo",
         ).stdout.strip()
         self.assertEqual(rows, "6")
+
+
+class Lab6DocumentationTests(unittest.TestCase):
+    def test_readme_contains_all_required_lab_sections(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        for heading in (
+            "## How to run",
+            "## Schema",
+            "## Design decisions",
+            "## Constraint violation log",
+            "## Index experiment",
+            "## Transaction experiment",
+            "## Bonus tasks",
+            "## Self-review checklist",
+        ):
+            self.assertIn(heading, readme)
+
+        for evidence in (
+            "PostgreSQL 16.15",
+            "49,997",
+            "24.5× faster",
+            "0|0",
+            "1|1",
+            "Lost update",
+            "SQL injection",
+            "students_email_format",
+            "erDiagram",
+        ):
+            self.assertIn(evidence, readme)
 
 
 if __name__ == "__main__":
