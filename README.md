@@ -153,7 +153,36 @@ The plan changed because `student_id = 777` is highly selective: only 3 of 50,00
 
 ## Transaction experiment
 
-Measured results are added after the two-session transaction exercise.
+### Failure rolls back the whole unit
+
+In one transaction, the first statement inserted `temporary@example.com`; the second attempted the already-used `aigerim@example.com` and failed with `23505`. PostgreSQL marked the transaction as aborted, `COMMIT` resulted in `ROLLBACK`, and the final count for the temporary email was `0`. The first successful statement did not leak through:
+
+```text
+BEGIN
+INSERT 0 1
+ERROR: 23505: duplicate key value violates unique constraint "students_email_key"
+ROLLBACK
+temporary_rows_after_failure = 0
+```
+
+This is atomicity: a multi-statement operation either commits as one unit or leaves no partial result. An application must explicitly roll back after an error before it can reuse that transaction/session.
+
+### Two-session visibility
+
+Session A began a transaction, inserted `transaction@example.com` and its enrollment, then paused before committing. Session A could see its own writes (`1` student), but Session B saw `0|0` for the student and enrollment. After A committed, the same query in B returned `1|1`.
+
+```text
+                         Session A                    Session B
+BEGIN
+INSERT student
+INSERT enrollment
+sees student = 1
+                         (before COMMIT)              sees 0 students, 0 enrollments
+COMMIT
+                         (after COMMIT)               sees 1 student, 1 enrollment
+```
+
+This matches PostgreSQL's default `READ COMMITTED` isolation: another transaction sees only data committed before each statement begins. The experiment database was reset with `schema.sql` and `seed.sql` afterward.
 
 ## Bonus tasks
 
@@ -166,6 +195,6 @@ The normalization, concurrency, injection, analytical-query, and schema-evolutio
 - [x] Required API queries and both bonus reports are present.
 - [x] Constraint failures were reproduced against PostgreSQL.
 - [x] Before/after index plans and measured timings are documented.
-- [ ] Transaction failure and two-session visibility are documented.
+- [x] Transaction failure and two-session visibility are documented.
 - [ ] All five bonus tasks are documented.
 - [ ] Fresh automated verification passes.
