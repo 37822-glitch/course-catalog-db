@@ -104,6 +104,53 @@ class Lab6SchemaTests(unittest.TestCase):
         self.assertIn("enrollments_student_id_idx", indexes)
 
 
+class Lab6SeedTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        run_psql("-v", "ON_ERROR_STOP=1", "-f", str(ROOT / "schema.sql"))
+        run_psql("-v", "ON_ERROR_STOP=1", "-f", str(ROOT / "seed.sql"))
+
+    def test_seed_has_exact_required_row_counts(self) -> None:
+        counts = run_psql(
+            "-Atc",
+            "SELECT (SELECT count(*) FROM courses), "
+            "(SELECT count(*) FROM students), "
+            "(SELECT count(*) FROM enrollments);",
+        ).stdout.strip()
+        self.assertEqual(counts, "6|3|6")
+
+    def test_seed_preserves_course_and_student_order(self) -> None:
+        courses = run_psql(
+            "-Atc",
+            "SELECT id || ':' || credits || ':' || is_elective || ':' || likes "
+            "FROM courses ORDER BY id;",
+        ).stdout.splitlines()
+        self.assertEqual(
+            courses,
+            [
+                "ai-integration:5:true:32",
+                "api-design:4:true:11",
+                "backend-fastapi:5:false:19",
+                "databases-postgresql:5:false:15",
+                "modern-frontend:5:false:24",
+                "web-security:4:false:21",
+            ],
+        )
+
+        students = run_psql(
+            "-Atc",
+            "SELECT id || ':' || name || ':' || email FROM students ORDER BY id;",
+        ).stdout.splitlines()
+        self.assertEqual(
+            students,
+            [
+                "1:Aigerim Sadykova:aigerim@example.com",
+                "2:Daniyar Bekov:daniyar@example.com",
+                "3:Asel Omarova:asel@example.com",
+            ],
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
